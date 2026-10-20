@@ -1,17 +1,9 @@
 import { Markup, Telegraf } from "telegraf";
+import { formatMoney } from "./format.js";
 import { APP_VERSION } from "./version.js";
 
 const SYMBOL_PATTERN = /^[A-Z.]{1,10}$/;
 const pendingOrders = new Map();
-
-function formatMoney(value) {
-  const amount = Number(value);
-  if (Number.isNaN(amount)) return String(value);
-  return amount.toLocaleString("en-US", {
-    style: "currency",
-    currency: "USD",
-  });
-}
 
 function parseOrderArgs(text) {
   const [, symbolRaw, qtyRaw] = text.trim().split(/\s+/);
@@ -35,7 +27,7 @@ function isAllowedUser(ctx, allowedUserId) {
   return ctx.from?.id === allowedUserId;
 }
 
-export function createBot({ token, allowedUserId, alpaca }) {
+export function createBot({ token, allowedUserId, alpaca, desk }) {
   const bot = new Telegraf(token);
 
   bot.use(async (ctx, next) => {
@@ -56,6 +48,9 @@ export function createBot({ token, allowedUserId, alpaca }) {
         "/quote AAPL — котировка",
         "/buy AAPL 1 — купить",
         "/sell AAPL 1 — продать",
+        "/scan — проверить пробои сейчас",
+        "/plan — идеи дня",
+        "/journal — журнал за 7 дней",
         "/version — версия бота",
       ].join("\n"),
     ),
@@ -118,6 +113,18 @@ export function createBot({ token, allowedUserId, alpaca }) {
   bot.command("buy", (ctx) => requestOrder(ctx, "buy"));
   bot.command("sell", (ctx) => requestOrder(ctx, "sell"));
 
+  bot.command("scan", async (ctx) => {
+    await ctx.reply(await desk.scanNow());
+  });
+
+  bot.command("plan", async (ctx) => {
+    await ctx.reply(await desk.planText());
+  });
+
+  bot.command("journal", async (ctx) => {
+    await ctx.reply(await desk.journalText());
+  });
+
   bot.command("version", (ctx) =>
     ctx.reply(`stock-analiz ${APP_VERSION}\nPaper Alpaca, Telegram-бот.`),
   );
@@ -149,6 +156,33 @@ export function createBot({ token, allowedUserId, alpaca }) {
 
     await ctx.editMessageText("Ордер отменён.");
     await ctx.answerCbQuery("Отменено");
+  });
+
+  bot.action(/^plan:buy:(\d{4}-\d{2}-\d{2}):([A-Z.]{1,10})$/, async (ctx) => {
+    const result = await desk.buyIdea({
+      date: ctx.match[1],
+      symbol: ctx.match[2],
+    });
+    await ctx.answerCbQuery(result.ok ? "Отправлено" : "Не отправлено");
+    await ctx.reply(result.text);
+  });
+
+  bot.action(/^plan:sell:(\d{4}-\d{2}-\d{2}):([A-Z.]{1,10})$/, async (ctx) => {
+    const result = await desk.sellIdea({
+      date: ctx.match[1],
+      symbol: ctx.match[2],
+    });
+    await ctx.answerCbQuery(result.ok ? "Закрыто" : "Не закрыто");
+    await ctx.reply(result.text);
+  });
+
+  bot.action(/^plan:cover:(\d{4}-\d{2}-\d{2}):([A-Z.]{1,10})$/, async (ctx) => {
+    const result = await desk.coverShort({
+      date: ctx.match[1],
+      symbol: ctx.match[2],
+    });
+    await ctx.answerCbQuery(result.ok ? "Закрываю" : "Нет шорта");
+    await ctx.reply(result.text);
   });
 
   bot.catch((error, ctx) => {

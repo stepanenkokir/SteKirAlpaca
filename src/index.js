@@ -1,18 +1,39 @@
 import { createAlpacaClient } from "./alpaca.js";
 import { createBot } from "./bot.js";
 import { loadConfig } from "./config.js";
+import { createDesk } from "./desk.js";
+import { createOpenAiClient } from "./openai.js";
+import { startScheduler } from "./scheduler.js";
+import { createStore } from "./store.js";
 import { APP_VERSION } from "./version.js";
 
 const config = loadConfig();
 const alpaca = createAlpacaClient(config);
+const openai = createOpenAiClient({
+  apiKey: config.openaiApiKey,
+  model: config.openaiModel,
+});
+const store = createStore();
+const notifier = {};
+const desk = createDesk({ alpaca, openai, store, config, notifier });
 const bot = createBot({
   token: config.telegramBotToken,
   allowedUserId: config.telegramAllowedUserId,
   alpaca,
+  desk,
 });
 
+notifier.send = (text, extra) =>
+  bot.telegram.sendMessage(config.telegramAllowedUserId, text, extra);
+
 await bot.launch();
+const stopScheduler = startScheduler(desk);
 console.log(`Bot started v${APP_VERSION}`);
 
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+function shutdown(signal) {
+  stopScheduler();
+  bot.stop(signal);
+}
+
+process.once("SIGINT", () => shutdown("SIGINT"));
+process.once("SIGTERM", () => shutdown("SIGTERM"));
