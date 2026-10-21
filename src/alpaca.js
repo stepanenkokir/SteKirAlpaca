@@ -1,5 +1,6 @@
 const TRADING_URL = "https://paper-api.alpaca.markets";
 const DATA_URL = "https://data.alpaca.markets";
+const TIMEOUT_MS = 15_000;
 
 export class HttpError extends Error {
   constructor(message, status) {
@@ -26,6 +27,7 @@ export function createAlpacaClient({ alpacaApiKey, alpacaSecretKey }) {
   async function request(baseUrl, path, options = {}) {
     const response = await fetch(`${baseUrl}${path}`, {
       ...options,
+      signal: options.signal ?? AbortSignal.timeout(TIMEOUT_MS),
       headers: {
         Accept: "application/json",
         ...headers,
@@ -155,19 +157,6 @@ export function createAlpacaClient({ alpacaApiKey, alpacaSecretKey }) {
     getOrder(id, { nested = true } = {}) {
       const params = new URLSearchParams({ nested: String(nested) });
       return request(TRADING_URL, `/v2/orders/${id}?${params}`);
-    },
-
-    getOrders({ nested = true, status = "all", symbols } = {}) {
-      const params = new URLSearchParams({
-        nested: String(nested),
-        status,
-      });
-
-      if (symbols?.length) {
-        params.set("symbols", symbols.join(","));
-      }
-
-      return request(TRADING_URL, `/v2/orders?${params}`);
     },
 
     submitMarketOrder({ symbol, qty, side }) {

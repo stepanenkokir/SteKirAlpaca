@@ -43,6 +43,31 @@ export function coverKeyboard(date, symbol) {
   return inline([[button("Закрыть шорт", `plan:cover:${date}:${symbol}`)]]);
 }
 
+export function phaseLabel(phase) {
+  return (
+    {
+      idle: "ожидание диапазона",
+      scan: "поиск пробоя",
+      watch: "сопровождение",
+      flatten: "закрытие сессии",
+    }[phase] ?? phase
+  );
+}
+
+export function reasonLabel(reason) {
+  return (
+    {
+      lost_vwap: "потерян VWAP",
+      back_in_range: "возврат в диапазон",
+      session_end: "близко закрытие сессии",
+      auto_flatten: "автозакрытие перед концом сессии",
+      manual: "ручной выход",
+      stop_filled: "стоп",
+      target_filled: "цель",
+    }[reason] ?? reason
+  );
+}
+
 function inline(rows) {
   return { reply_markup: { inline_keyboard: rows } };
 }

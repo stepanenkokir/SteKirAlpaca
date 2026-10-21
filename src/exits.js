@@ -1,9 +1,8 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { isNotFound } from "./alpaca.js";
 import { isOpenOrderStatus } from "./market.js";
 
-export function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+export { delay };
 
 export async function flattenPosition({
   alpaca,

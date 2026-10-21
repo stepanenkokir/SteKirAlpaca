@@ -1,8 +1,8 @@
+import { setTimeout as delay } from "node:timers/promises";
 import { createAlpacaClient } from "../src/alpaca.js";
 import { loadConfig } from "../src/config.js";
 import { formatSummary, summarizeEvents } from "../src/journal.js";
 import {
-  DAILY_LOOKBACK,
   MAX_IDEAS_PER_DAY,
   SCAN_END_MINUTES,
   SCAN_START_MINUTES,
@@ -10,10 +10,10 @@ import {
   evaluateBreakout,
   minutesSinceMidnightNy,
   nyWallToUtc,
+  planEntry,
+  priorDailyBars,
   sessionDate,
   simulateTrade,
-  sizePosition,
-  stopFromRange,
 } from "../src/market.js";
 
 const SESSIONS = 90;
@@ -79,10 +79,9 @@ for (const session of sessions) {
     const bars = (minuteBars[symbol] ?? []).filter(
       (bar) => sessionDate(new Date(bar.t)) === session.date,
     );
-    const prior = (dailyBars[symbol] ?? [])
-      .filter((bar) => sessionDate(new Date(bar.t)) < session.date)
-      .slice(-DAILY_LOOKBACK);
-    const avgDaily = averageDailyVolume(prior);
+    const avgDaily = averageDailyVolume(
+      priorDailyBars(dailyBars[symbol] ?? [], session.date),
+    );
     const scanTimes = uniqueScanTimes(bars);
     let lastReason = "no_bar";
     let picked = null;
@@ -100,16 +99,12 @@ for (const session of sessions) {
         continue;
       }
 
-      const entryPrice = result.lastClose * (1 + config.entryBufferPct);
-      const stopPrice = stopFromRange({
-        entryPrice,
-        rangeLow: result.rangeLow,
-      });
-      const sized = sizePosition({
+      const sized = planEntry({
+        idea: result,
+        rawEntryPrice: result.lastClose,
         equity: PAPER_EQUITY,
         buyingPower: PAPER_EQUITY,
-        entryPrice,
-        stopPrice,
+        entryBufferPct: config.entryBufferPct,
         riskFraction: config.riskFraction,
         maxPositionFraction: config.maxPositionFraction,
       });
@@ -122,7 +117,6 @@ for (const session of sessions) {
       picked = {
         ...result,
         ...sized,
-        entryPrice,
         now,
       };
       break;
@@ -232,8 +226,4 @@ async function withRetry(fn) {
   }
 
   throw lastError;
-}
-
-function delay(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }

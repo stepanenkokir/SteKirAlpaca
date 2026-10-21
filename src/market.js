@@ -25,24 +25,25 @@ const TERMINAL_ORDER_STATUSES = new Set([
   "replaced",
 ]);
 
-export function nyParts(date) {
-  const formatter = new Intl.DateTimeFormat("en-US", {
-    timeZone: NY_TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
+const NY_FORMATTER = new Intl.DateTimeFormat("en-US", {
+  timeZone: NY_TZ,
+  year: "numeric",
+  month: "2-digit",
+  day: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+  second: "2-digit",
+  hourCycle: "h23",
+});
 
-  const map = Object.fromEntries(
-    formatter
-      .formatToParts(date)
-      .filter((part) => part.type !== "literal")
-      .map((part) => [part.type, part.value]),
-  );
+export function nyParts(date) {
+  const map = {};
+
+  for (const part of NY_FORMATTER.formatToParts(date)) {
+    if (part.type !== "literal") {
+      map[part.type] = part.value;
+    }
+  }
 
   return {
     year: Number(map.year),
@@ -165,6 +166,12 @@ export function sessionVwap(bars) {
   return pv / volume;
 }
 
+export function priorDailyBars(bars, today, lookback = DAILY_LOOKBACK) {
+  return (bars ?? [])
+    .filter((bar) => sessionDate(new Date(bar.t)) < today)
+    .slice(-lookback);
+}
+
 export function averageDailyVolume(dailyBars, lookback = DAILY_LOOKBACK) {
   const closed = dailyBars.slice(-lookback);
 
@@ -226,6 +233,39 @@ export function sizePosition({
     targetPrice,
     notional: roundPrice(qty * entryPrice),
     riskDollars: roundPrice(qty * r),
+  };
+}
+
+export function planEntry({
+  idea,
+  rawEntryPrice,
+  equity,
+  buyingPower,
+  entryBufferPct = 0,
+  riskFraction,
+  maxPositionFraction,
+}) {
+  const entryPrice = roundPrice(rawEntryPrice * (1 + entryBufferPct));
+  const stopPrice = stopFromRange({
+    entryPrice,
+    rangeLow: idea.rangeLow,
+  });
+  const sized = sizePosition({
+    equity,
+    buyingPower,
+    entryPrice,
+    stopPrice,
+    riskFraction,
+    maxPositionFraction,
+  });
+
+  if (!sized) {
+    return null;
+  }
+
+  return {
+    entryPrice,
+    ...sized,
   };
 }
 
@@ -311,16 +351,13 @@ export function evaluateBreakout({
 
 export function sessionPhase({ now, clock, hasPlanPositions }) {
   const minutes = minutesSinceMidnightNy(now);
-  const nextClose = clock.next_close ? new Date(clock.next_close) : null;
-  const minutesToClose = nextClose
-    ? (nextClose.getTime() - now.getTime()) / 60_000
-    : null;
+  const remaining = minutesToClose(now, clock);
 
   if (
     clock.is_open &&
     hasPlanPositions &&
-    minutesToClose != null &&
-    minutesToClose <= FLATTEN_MINUTES
+    remaining != null &&
+    remaining <= FLATTEN_MINUTES
   ) {
     return "flatten";
   }
@@ -421,11 +458,25 @@ export function simulateTrade({
   rangeLow,
   sessionClose,
 }) {
-  const prefix = bars.filter((bar) => new Date(bar.t) <= new Date(entryTime));
-  const after = bars.filter((bar) => new Date(bar.t) > new Date(entryTime));
+  const entryMs = new Date(entryTime).getTime();
+  const closeMs = sessionClose.getTime();
+  let pv = 0;
+  let volume = 0;
+  let lastBar = null;
 
-  for (const bar of after) {
-    prefix.push(bar);
+  for (const bar of bars) {
+    const barDate = new Date(bar.t);
+    const barMs = barDate.getTime();
+    lastBar = bar;
+
+    if (minutesSinceMidnightNy(barDate) >= SESSION_OPEN_MINUTES) {
+      pv += ((bar.h + bar.l + bar.c) / 3) * bar.v;
+      volume += bar.v;
+    }
+
+    if (barMs <= entryMs) {
+      continue;
+    }
 
     if (bar.l <= stopPrice) {
       return { reason: "stop_filled", price: stopPrice };
@@ -435,12 +486,13 @@ export function simulateTrade({
       return { reason: "target_filled", price: targetPrice };
     }
 
+    const vwap = volume > 0 ? pv / volume : null;
     const reason = exitReason({
       lastClose: bar.c,
       rangeHigh,
       rangeLow,
-      vwap: sessionVwap(prefix),
-      minutesToClose: (sessionClose.getTime() - new Date(bar.t).getTime()) / 60_000,
+      vwap,
+      minutesToClose: (closeMs - barMs) / 60_000,
     });
 
     if (reason) {
@@ -448,8 +500,7 @@ export function simulateTrade({
     }
   }
 
-  const last = after.at(-1) ?? prefix.at(-1);
-  return { reason: "session_end", price: last?.c ?? entryPrice };
+  return { reason: "session_end", price: lastBar?.c ?? entryPrice };
 }
 
 function reject(reason, extras) {

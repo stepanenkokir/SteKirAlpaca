@@ -41,6 +41,10 @@ export const FALLBACK_EXIT = {
 };
 
 export function createOpenAiClient({ apiKey, model }) {
+  const samplingParams = /^(gpt-[56]|o\d)/i.test(model)
+    ? { reasoning_effort: "none" }
+    : { temperature: 0.2 };
+
   async function complete({ messages, schema }) {
     let lastError = null;
 
@@ -48,7 +52,7 @@ export function createOpenAiClient({ apiKey, model }) {
       try {
         const payload = await requestJson({
           model,
-          temperature: 0.2,
+          ...samplingParams,
           messages,
           response_format: {
             type: "json_schema",
@@ -71,42 +75,36 @@ export function createOpenAiClient({ apiKey, model }) {
   }
 
   async function requestJson(body) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    const response = await fetch(OPENAI_URL, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(TIMEOUT_MS),
+    });
+    const text = await response.text();
+    let payload = null;
 
-    try {
-      const response = await fetch(OPENAI_URL, {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-      const text = await response.text();
-      let payload = null;
-
-      if (text) {
-        try {
-          payload = JSON.parse(text);
-        } catch {
-          payload = { error: { message: text } };
-        }
+    if (text) {
+      try {
+        payload = JSON.parse(text);
+      } catch {
+        payload = { error: { message: text } };
       }
-
-      if (!response.ok) {
-        throw new Error(payload?.error?.message || text || response.statusText);
-      }
-
-      return payload;
-    } finally {
-      clearTimeout(timer);
     }
+
+    if (!response.ok) {
+      throw new Error(payload?.error?.message || text || response.statusText);
+    }
+
+    return payload;
   }
 
   return {
-    async explainSignal({ idea, headlines }) {
+    async explainSignal({ idea, headlines = [], news }) {
+      const newsItems = (news ?? idea.news ?? headlines).slice(0, 5);
       const prompt = {
         symbol: idea.symbol,
         lastClose: idea.lastClose,
@@ -117,7 +115,7 @@ export function createOpenAiClient({ apiKey, model }) {
         stopPrice: idea.stopPrice,
         targetPrice: idea.targetPrice,
         qty: idea.qty,
-        headlines: headlines.slice(0, 5),
+        headlines: newsItems,
         note: "Цифры уже посчитаны кодом. Не предлагай другие цены. Пиши по-русски кратко.",
       };
 

@@ -18,7 +18,3 @@ export function formatPct(value) {
 export function formatRvol(value) {
   return `${Number(value).toFixed(2)}×`;
 }
-
-export function formatQty(value) {
-  return String(Number(value));
-}

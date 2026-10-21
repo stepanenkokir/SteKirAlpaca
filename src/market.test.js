@@ -10,6 +10,8 @@ import {
   minutesSinceMidnightNy,
   nyWallToUtc,
   openingRange,
+  planEntry,
+  priorDailyBars,
   relativeOpenVolume,
   roundPrice,
   sessionDate,
@@ -340,5 +342,30 @@ describe("volume helpers", () => {
     const daily = Array.from({ length: 5 }, (_, i) => ({ v: (i + 1) * 10 }));
     assert.equal(averageDailyVolume(daily, 4), 35);
     assert.ok(relativeOpenVolume(24, 100) - 2 < 1e-9);
+  });
+
+  it("filters priorDailyBars strictly before the session date", () => {
+    const bars = [
+      { t: nyWallToUtc("2026-06-12T09:30:00"), v: 100 },
+      { t: nyWallToUtc("2026-06-15T09:30:00"), v: 999 },
+    ];
+    const prior = priorDailyBars(bars, DAY, 20);
+    assert.equal(prior.length, 1);
+    assert.equal(prior[0].v, 100);
+  });
+
+  it("plans entry with buffer, stop and size in one helper", () => {
+    const planned = planEntry({
+      idea: { rangeLow: 99 },
+      rawEntryPrice: 100,
+      equity: 10_000,
+      buyingPower: 10_000,
+      entryBufferPct: 0.001,
+      riskFraction: 0.005,
+      maxPositionFraction: 0.25,
+    });
+    assert.equal(planned.entryPrice, 100.1);
+    assert.equal(planned.stopPrice, 99);
+    assert.equal(planned.qty, 24);
   });
 });

@@ -10,11 +10,20 @@ export function createStore({
   sessionFile = join(dataDir, "session.json"),
   journalFile = join(dataDir, "journal.jsonl"),
 } = {}) {
+  let writeChain = Promise.resolve();
+  let tmpSeq = 0;
+
+  function serialize(task) {
+    const run = writeChain.then(task, task);
+    writeChain = run.catch(() => {});
+    return run;
+  }
+
   async function ensureDir() {
     await mkdir(dataDir, { recursive: true });
   }
 
-  async function loadSession(date) {
+  async function readSessionFile(date) {
     await ensureDir();
 
     try {
@@ -33,17 +42,28 @@ export function createStore({
     return emptySession(date);
   }
 
-  async function saveSession(session) {
+  async function writeSessionFile(session) {
     await ensureDir();
-    await atomicWrite(sessionFile, `${JSON.stringify(session, null, 2)}\n`);
+    tmpSeq += 1;
+    await atomicWrite(sessionFile, `${JSON.stringify(session, null, 2)}\n`, tmpSeq);
     return session;
   }
 
-  async function updateSession(date, mutator) {
-    const session = await loadSession(date);
-    const next = (await mutator(session)) ?? session;
-    await saveSession(next);
-    return next;
+  async function loadSession(date) {
+    await writeChain;
+    return readSessionFile(date);
+  }
+
+  function saveSession(session) {
+    return serialize(() => writeSessionFile(session));
+  }
+
+  function updateSession(date, mutator) {
+    return serialize(async () => {
+      const session = await readSessionFile(date);
+      const next = (await mutator(session)) ?? session;
+      return writeSessionFile(next);
+    });
   }
 
   async function appendJournal(event) {
@@ -92,8 +112,8 @@ export function emptySession(date) {
   };
 }
 
-async function atomicWrite(filePath, contents) {
-  const tmp = `${filePath}.${process.pid}.tmp`;
+async function atomicWrite(filePath, contents, seq = 0) {
+  const tmp = `${filePath}.${process.pid}.${seq}.tmp`;
   await writeFile(tmp, contents, "utf8");
 
   try {
