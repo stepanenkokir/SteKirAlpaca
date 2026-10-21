@@ -26,9 +26,7 @@ const bot = createBot({
 notifier.send = (text, extra) =>
   bot.telegram.sendMessage(config.telegramAllowedUserId, text, extra);
 
-await bot.launch();
 const stopScheduler = startScheduler(desk);
-console.log(`Bot started v${APP_VERSION}`);
 
 function shutdown(signal) {
   stopScheduler();
@@ -37,3 +35,12 @@ function shutdown(signal) {
 
 process.once("SIGINT", () => shutdown("SIGINT"));
 process.once("SIGTERM", () => shutdown("SIGTERM"));
+
+console.log(`Bot started v${APP_VERSION}`);
+
+try {
+  await bot.launch();
+} catch (error) {
+  stopScheduler();
+  throw error;
+}
