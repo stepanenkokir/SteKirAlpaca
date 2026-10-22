@@ -4,9 +4,11 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HttpError } from "./alpaca.js";
-import { createDesk } from "./desk.js";
+import { BOT_COMMANDS, MENU_BUTTONS, mainMenuKeyboard } from "./bot.js";
+import { createDesk, extractSymbols } from "./desk.js";
 import { cancelTargets, flattenPosition } from "./exits.js";
 import { nyWallToUtc } from "./market.js";
+import { createOpenAiClient } from "./openai.js";
 import { groupNewsBySymbol } from "./scanner.js";
 import { createStore } from "./store.js";
 
@@ -318,6 +320,146 @@ describe("scanner and desk session integrity", () => {
       assert.equal(journal[0].type, "filter");
       assert.equal(journal[0].symbol, "AAPL");
       assert.equal(journal[0].reason, "no_breakout");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("menu, news digest and assistant chat", () => {
+  it("extracts tickers from commands and natural Russian questions", () => {
+    const watchlist = ["AAPL", "NVDA", "MSFT"];
+    assert.deepEqual(extractSymbols("/news AAPL nvda", watchlist), ["AAPL", "NVDA"]);
+    assert.deepEqual(
+      extractSymbols("Какие новости по nvda и $TSLA? Что с VWAP и ORB?", watchlist),
+      ["NVDA", "TSLA"],
+    );
+    assert.deepEqual(extractSymbols("/news", watchlist), []);
+    assert.deepEqual(extractSymbols("Новости", watchlist), []);
+  });
+
+  it("exposes native Telegram commands and reply keyboard buttons", () => {
+    const commandNames = BOT_COMMANDS.map((item) => item.command);
+    assert.ok(commandNames.includes("account"));
+    assert.ok(commandNames.includes("news"));
+    assert.ok(commandNames.includes("menu"));
+
+    const keyboard = mainMenuKeyboard();
+    assert.equal(keyboard.reply_markup.resize_keyboard, true);
+    assert.deepEqual(keyboard.reply_markup.keyboard, [
+      [MENU_BUTTONS.ACCOUNT, MENU_BUTTONS.POSITIONS, MENU_BUTTONS.PLAN],
+      [MENU_BUTTONS.SCAN, MENU_BUTTONS.NEWS, MENU_BUTTONS.JOURNAL],
+    ]);
+  });
+
+  it("falls back gracefully in OpenAI summarizeNews and answerQuestion on network errors", async () => {
+    const client = createOpenAiClient({
+      apiKey: "test-key",
+      model: "gpt-4.1-mini",
+      fetchImpl: async () => {
+        throw new Error("network down");
+      },
+    });
+
+    const digest = await client.summarizeNews({
+      symbols: ["AAPL"],
+      articles: [{ symbols: ["AAPL"], headline: "Apple launches new chip" }],
+    });
+    assert.match(digest.summary, /Свежие заголовки/);
+    assert.deepEqual(digest.highlights, ["[AAPL] Apple launches new chip"]);
+
+    const reply = await client.answerQuestion({
+      question: "Что по AAPL?",
+      context: {
+        news: [{ symbols: ["AAPL"], headline: "Apple launches new chip" }],
+      },
+    });
+    assert.match(reply.answer, /временно недоступен/);
+    assert.match(reply.answer, /Apple launches new chip/);
+  });
+
+  it("formats newsDigest and askAssistant using Alpaca data and OpenAI", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stock-analiz-chat-"));
+    try {
+      const store = createStore({ dataDir: dir });
+      const now = new Date(nyWallToUtc("2026-06-15T10:15:00"));
+      let capturedQuestion = null;
+      let capturedContext = null;
+
+      const alpaca = {
+        async getAccount() {
+          return {
+            equity: "100500",
+            cash: "80000",
+            buying_power: "160000",
+            status: "ACTIVE",
+          };
+        },
+        async getPositions() {
+          return [
+            {
+              symbol: "MSFT",
+              qty: "10",
+              avg_entry_price: "420",
+              unrealized_pl: "50",
+            },
+          ];
+        },
+        async getLatestQuotes(symbols) {
+          const quotes = {};
+          for (const sym of symbols) {
+            quotes[sym] = { bp: 199.5, ap: 200.0 };
+          }
+          return { quotes };
+        },
+        async getNews({ symbols }) {
+          return {
+            news: symbols.map((sym) => ({
+              symbols: [sym],
+              headline: `${sym} quarterly update`,
+              summary: "Strong guidance",
+              created_at: "2026-06-15T14:00:00Z",
+            })),
+          };
+        },
+      };
+
+      const openai = {
+        async summarizeNews({ symbols }) {
+          return {
+            summary: `Обзор по ${symbols.join(", ")}: позитивный фон.`,
+            highlights: symbols.map((sym) => `${sym}: сильный прогноз`),
+          };
+        },
+        async answerQuestion({ question, context }) {
+          capturedQuestion = question;
+          capturedContext = context;
+          return {
+            answer: `По ${context.mentionedSymbols.join(", ")} новости позитивные, позиция MSFT в плюсе.`,
+          };
+        },
+      };
+
+      const desk = createDesk({
+        alpaca,
+        openai,
+        store,
+        config: { watchlist: ["AAPL", "NVDA", "MSFT"] },
+        notifier: { async send() {} },
+      });
+
+      const digestText = await desk.newsDigest("/news AAPL", now);
+      assert.match(digestText, /Новости \(AAPL\) — 10:15 ET/);
+      assert.match(digestText, /AAPL: bid \$199\.50 \/ ask \$200\.00/);
+      assert.match(digestText, /Обзор по AAPL: позитивный фон\./);
+      assert.match(digestText, /• AAPL: сильный прогноз/);
+
+      const answer = await desk.askAssistant("Какие новости по nvda?", now);
+      assert.equal(capturedQuestion, "Какие новости по nvda?");
+      assert.deepEqual(capturedContext.mentionedSymbols, ["NVDA"]);
+      assert.equal(capturedContext.positions[0].symbol, "MSFT");
+      assert.ok(capturedContext.quotes.NVDA);
+      assert.match(answer, /По NVDA новости позитивные/);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
