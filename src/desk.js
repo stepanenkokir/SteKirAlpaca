@@ -14,9 +14,11 @@ import {
   minutesSinceMidnightNy,
   openPlanCount,
   planEntry,
+  resolveEntryReferencePrice,
   scanWindowLabel,
   sessionDate,
   sessionPhase,
+  validateEntryTiming,
 } from "./market.js";
 import { createScanner } from "./scanner.js";
 import { createWatcher } from "./watcher.js";
@@ -95,7 +97,14 @@ function normalizeQuotesMap(quotesPayload) {
   return result;
 }
 
-export function createDesk({ alpaca, openai, store, config, notifier }) {
+export function createDesk({
+  alpaca,
+  openai,
+  store,
+  config,
+  notifier,
+  postBuyCheckDelayMs = 1500,
+}) {
   let tickInFlight = false;
   let actionChain = Promise.resolve();
 
@@ -421,19 +430,59 @@ export function createDesk({ alpaca, openai, store, config, notifier }) {
       await store.saveSession(session);
 
       try {
-        const [quotePayload, account] = await Promise.all([
-          alpaca.getLatestQuote(symbol),
+        const [snapshotPayload, account] = await Promise.all([
+          typeof alpaca.getSnapshot === "function"
+            ? alpaca.getSnapshot(symbol).catch(() => null)
+            : Promise.resolve(null),
           alpaca.getAccount(),
         ]);
-        const ask = Number(quotePayload?.quote?.ap);
 
-        if (!Number.isFinite(ask) || ask <= 0) {
-          throw new Error(`Нет ask для ${symbol}`);
+        let quote = snapshotPayload?.latestQuote ?? snapshotPayload?.quote ?? null;
+        const lastTradePrice = Number(
+          snapshotPayload?.latestTrade?.p ?? snapshotPayload?.trade?.p,
+        );
+
+        if (!quote && typeof alpaca.getLatestQuote === "function") {
+          const quotePayload = await alpaca.getLatestQuote(symbol);
+          quote = quotePayload?.quote ?? quotePayload;
+        }
+
+        const ask = Number(quote?.ap);
+        const bid = Number(quote?.bp);
+        const rawEntryPrice = resolveEntryReferencePrice({
+          ask,
+          bid,
+          lastTradePrice,
+          lastClose: idea.lastClose,
+        });
+
+        if (!Number.isFinite(rawEntryPrice) || rawEntryPrice <= 0) {
+          throw new Error(`Нет актуальной цены для ${symbol}`);
+        }
+
+        const timing = validateEntryTiming({
+          price: rawEntryPrice,
+          rangeHigh: idea.rangeHigh,
+          rangeLow: idea.rangeLow,
+          vwap: idea.vwap,
+        });
+
+        if (!timing.ok) {
+          idea.status = "signaled";
+          await store.saveSession(session);
+          const timingText =
+            timing.reason === "chase"
+              ? `цена ${formatMoney(rawEntryPrice)} уже ушла слишком далеко от пробоя (${formatMoney(idea.rangeHigh)}).`
+              : `пробой сломан (цена ${formatMoney(rawEntryPrice)} ниже VWAP/диапазона).`;
+          return {
+            ok: false,
+            text: `${symbol}: вход отменён — ${timingText}`,
+          };
         }
 
         const sized = planEntry({
           idea,
-          rawEntryPrice: ask,
+          rawEntryPrice,
           equity: Number(account.equity),
           buyingPower: Number(account.buying_power),
           entryBufferPct: config.entryBufferPct,
@@ -466,6 +515,7 @@ export function createDesk({ alpaca, openai, store, config, notifier }) {
           qty: idea.qty,
           limitPrice: idea.entryPrice,
         });
+        schedulePostBuyCheck(date);
         return {
           ok: true,
           text: `Ордер ${symbol} ${idea.qty} @ ${formatMoney(idea.entryPrice)} отправлен. Статус: ${order.status}.`,
@@ -527,6 +577,21 @@ export function createDesk({ alpaca, openai, store, config, notifier }) {
         throw error;
       }
     });
+  }
+
+  function schedulePostBuyCheck(date) {
+    if (!(postBuyCheckDelayMs > 0)) {
+      return;
+    }
+
+    const timer = setTimeout(() => {
+      serializeAction(async () => {
+        const latestSession = await store.loadSession(date);
+        await watcher.watchOrders({ session: latestSession, now: new Date() });
+      }).catch((error) => console.error(error));
+    }, postBuyCheckDelayMs);
+
+    timer.unref?.();
   }
 
   async function notifyError(error, now) {

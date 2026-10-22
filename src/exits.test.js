@@ -9,7 +9,7 @@ import { createDesk, extractSymbols } from "./desk.js";
 import { cancelTargets, flattenPosition } from "./exits.js";
 import { nyWallToUtc } from "./market.js";
 import { createOpenAiClient } from "./openai.js";
-import { groupNewsBySymbol } from "./scanner.js";
+import { formatAccountNote, groupNewsBySymbol } from "./scanner.js";
 import { createStore } from "./store.js";
 
 describe("cancelTargets", () => {
@@ -460,6 +460,170 @@ describe("menu, news digest and assistant chat", () => {
       assert.equal(capturedContext.positions[0].symbol, "MSFT");
       assert.ok(capturedContext.quotes.NVDA);
       assert.match(answer, /По NVDA новости позитивные/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("IEX stub quote protection, stop adjustment order and account note", () => {
+  it("formats account note cleanly when PDT fields are absent in Alpaca API", () => {
+    assert.equal(
+      formatAccountNote({ status: "ACTIVE", multiplier: "4" }, {}),
+      "Счёт: статус=ACTIVE, плечо=4x, pdt_check=н/д.",
+    );
+    assert.equal(
+      formatAccountNote(
+        { pattern_day_trader: false, daytrade_count: 1 },
+        { pdt_check: "both" },
+      ),
+      "Счёт: PDT=false, day trades=1, pdt_check=both.",
+    );
+  });
+
+  it("ignores wide IEX ask in buyIdea, rejects chase/broken breakout, and adjusts legs before fill notification", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stock-analiz-tsla-"));
+    try {
+      const store = createStore({ dataDir: dir });
+      const day = "2026-10-22";
+      const now = new Date(nyWallToUtc(`${day}T09:47:56`));
+      const notifications = [];
+      const replacedLegs = [];
+      let submittedBracket = null;
+
+      await store.saveSession({
+        date: day,
+        pdtNoted: true,
+        lastScanMinute: 587,
+        lastWatchMinute: 587,
+        lastErrorAt: null,
+        flattened: false,
+        scanStarted: true,
+        scanSummarySent: false,
+        lastFilters: {},
+        ideas: {
+          TSLA: {
+            symbol: "TSLA",
+            ok: true,
+            reason: "breakout",
+            rangeHigh: 382.09,
+            rangeLow: 374.07,
+            rangePct: 0.0209,
+            vwap: 378.0,
+            rvol: 1.47,
+            lastClose: 383.28,
+            entryPrice: 383.66,
+            qty: 65,
+            r: 6.14,
+            stopPrice: 377.52,
+            targetPrice: 395.94,
+            status: "signaled",
+            notified: true,
+            stopMovedToBe: false,
+            notifiedEvents: [],
+          },
+        },
+      });
+
+      let snapshotTradePrice = 382.45;
+      const alpaca = {
+        async getClock() {
+          return { is_open: true, next_close: nyWallToUtc(`${day}T16:00:00`) };
+        },
+        async getAccount() {
+          return {
+            equity: "99947",
+            buying_power: "399788",
+            status: "ACTIVE",
+            multiplier: "4",
+          };
+        },
+        async getSnapshot() {
+          return {
+            latestQuote: { ap: 386.0, bp: 372.0 },
+            latestTrade: { p: snapshotTradePrice },
+          };
+        },
+        async getLatestQuotes() {
+          return { quotes: {} };
+        },
+        async submitBracketOrder(params) {
+          submittedBracket = params;
+          return { id: "ord-1", status: "pending_new" };
+        },
+        async getOrder() {
+          return {
+            id: "ord-1",
+            status: "filled",
+            filled_qty: "65",
+            filled_avg_price: "381.90",
+            legs: [
+              { id: "leg-tp", status: "new", type: "limit", limit_price: String(submittedBracket.takeProfit) },
+              { id: "leg-sl", status: "new", type: "stop", stop_price: String(submittedBracket.stopPrice) },
+            ],
+          };
+        },
+        async replaceOrder(id, patch) {
+          replacedLegs.push({ id, ...patch });
+          return { id };
+        },
+        async getStockBars() {
+          return { TSLA: [] };
+        },
+      };
+
+      const openai = {
+        async explainSignal() {
+          return { thesis: "", risk: "", prompt: {}, raw: {} };
+        },
+        async explainExit() {
+          return { thesis: "", action: "", prompt: {}, raw: {} };
+        },
+      };
+
+      const desk = createDesk({
+        alpaca,
+        openai,
+        store,
+        config: {
+          watchlist: ["TSLA"],
+          rvolMin: 1.1,
+          maxRangePct: 0.025,
+          entryBufferPct: 0.001,
+          riskFraction: 0.005,
+          maxPositionFraction: 0.25,
+          autoFlatten: true,
+        },
+        notifier: {
+          async send(text) {
+            notifications.push(text);
+          },
+        },
+        postBuyCheckDelayMs: 0,
+      });
+
+      snapshotTradePrice = 377.5;
+      const rejectedBroken = await desk.buyIdea({ symbol: "TSLA", date: day, now });
+      assert.equal(rejectedBroken.ok, false);
+      assert.match(rejectedBroken.text, /пробой сломан/);
+
+      snapshotTradePrice = 386.5;
+      const rejectedChase = await desk.buyIdea({ symbol: "TSLA", date: day, now });
+      assert.equal(rejectedChase.ok, false);
+      assert.match(rejectedChase.text, /ушла слишком далеко/);
+
+      snapshotTradePrice = 382.45;
+      const bought = await desk.buyIdea({ symbol: "TSLA", date: day, now });
+      assert.equal(bought.ok, true);
+      assert.equal(submittedBracket.limitPrice, 382.83);
+      assert.equal(submittedBracket.stopPrice, 376.7);
+
+      await desk.tick(new Date(nyWallToUtc(`${day}T09:48:05`)));
+      assert.equal(replacedLegs.length, 2);
+      assert.equal(replacedLegs[0].id, "leg-sl");
+      assert.equal(replacedLegs[0].stopPrice, 375.79);
+      assert.equal(notifications.length, 1);
+      assert.match(notifications[0], /Куплено TSLA 65 @ \$381\.90\. Стоп \$375\.79, цель \$394\.12\./);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

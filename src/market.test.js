@@ -13,6 +13,7 @@ import {
   planEntry,
   priorDailyBars,
   relativeOpenVolume,
+  resolveEntryReferencePrice,
   roundPrice,
   sessionDate,
   sessionPhase,
@@ -22,6 +23,7 @@ import {
   shouldReplaceLegs,
   sizePosition,
   stopFromRange,
+  validateEntryTiming,
 } from "./market.js";
 
 const DAY = "2026-06-15";
@@ -204,9 +206,68 @@ describe("position size and prices", () => {
     assert.equal(roundPrice(0.12346), 0.1235);
   });
 
-  it("caps the stop at 1.2% when the range is wider", () => {
-    assert.equal(stopFromRange({ entryPrice: 100, rangeLow: 97 }), 98.8);
+  it("caps the stop at 1.6% when the range is wider", () => {
+    assert.equal(stopFromRange({ entryPrice: 100, rangeLow: 97 }), 98.4);
     assert.equal(stopFromRange({ entryPrice: 100, rangeLow: 99.5 }), 99.5);
+  });
+
+  it("filters out wide IEX stub quotes and uses trade/bar reference price", () => {
+    assert.equal(
+      resolveEntryReferencePrice({
+        ask: 386.0,
+        bid: 372.0,
+        lastTradePrice: 382.45,
+        lastClose: 383.28,
+      }),
+      382.45,
+    );
+    assert.equal(
+      resolveEntryReferencePrice({
+        ask: 386.0,
+        bid: 372.0,
+        lastClose: 383.28,
+      }),
+      383.28,
+    );
+    assert.equal(
+      resolveEntryReferencePrice({
+        ask: 382.5,
+        bid: 382.4,
+        lastTradePrice: 382.45,
+        lastClose: 383.28,
+      }),
+      382.5,
+    );
+  });
+
+  it("validates entry timing against chase and broken breakout", () => {
+    assert.deepEqual(
+      validateEntryTiming({
+        price: 382.45,
+        rangeHigh: 382.09,
+        rangeLow: 374.07,
+        vwap: 378.0,
+      }),
+      { ok: true, reason: "ok" },
+    );
+    assert.deepEqual(
+      validateEntryTiming({
+        price: 386.5,
+        rangeHigh: 382.09,
+        rangeLow: 374.07,
+        vwap: 378.0,
+      }),
+      { ok: false, reason: "chase" },
+    );
+    assert.deepEqual(
+      validateEntryTiming({
+        price: 377.5,
+        rangeHigh: 382.09,
+        rangeLow: 374.07,
+        vwap: 378.0,
+      }),
+      { ok: false, reason: "below_vwap" },
+    );
   });
 
   it("sizes by risk and caps notional", () => {
@@ -312,6 +373,15 @@ describe("exits and fills", () => {
     const legs = legsFromFill({ filledEntry: 100.2, stopPrice: 99, plannedEntry: 100 });
     assert.equal(legs.stopPrice, 99.2);
     assert.equal(legs.targetPrice, 102.2);
+
+    const improvedLegs = legsFromFill({
+      filledEntry: 100.05,
+      stopPrice: 99,
+      plannedEntry: 100.4,
+      rangeLow: 99,
+    });
+    assert.equal(improvedLegs.stopPrice, 99);
+    assert.equal(improvedLegs.targetPrice, 102.15);
   });
 });
 

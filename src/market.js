@@ -6,7 +6,8 @@ export const SCAN_END_MINUTES = 11 * 60;
 export const OPENING_VOLUME_FRACTION = 0.12;
 export const MIN_RANGE_PCT = 0.0015;
 export const MAX_RANGE_PCT = 0.025;
-export const MAX_STOP_PCT = 0.012;
+export const MAX_STOP_PCT = 0.016;
+export const MAX_QUOTE_DEVIATION_PCT = 0.0025;
 export const REWARD_R = 2;
 export const MAX_IDEAS_PER_DAY = 3;
 export const BREAKEVEN_R = 1;
@@ -212,6 +213,65 @@ export function relativeOpenVolume(openVolume, avgDailyVolume) {
   }
 
   return openVolume / typicalOpen;
+}
+
+export function resolveEntryReferencePrice({
+  ask,
+  bid,
+  lastTradePrice,
+  lastClose,
+  maxDeviationPct = MAX_QUOTE_DEVIATION_PCT,
+}) {
+  const reference =
+    Number.isFinite(lastTradePrice) && lastTradePrice > 0
+      ? lastTradePrice
+      : Number.isFinite(lastClose) && lastClose > 0
+        ? lastClose
+        : null;
+
+  if (!Number.isFinite(ask) || ask <= 0) {
+    return reference;
+  }
+
+  if (Number.isFinite(bid) && bid > 0) {
+    if (ask < bid || (ask - bid) / ask > maxDeviationPct) {
+      return reference ?? ask;
+    }
+  }
+
+  if (
+    reference != null &&
+    Math.abs(ask - reference) / reference > maxDeviationPct
+  ) {
+    return reference;
+  }
+
+  return ask;
+}
+
+export function validateEntryTiming({ price, rangeHigh, rangeLow, vwap }) {
+  if (!Number.isFinite(price) || price <= 0) {
+    return { ok: false, reason: "no_price" };
+  }
+
+  if (Number.isFinite(rangeLow) && price <= rangeLow) {
+    return { ok: false, reason: "below_range" };
+  }
+
+  if (Number.isFinite(vwap) && price <= vwap) {
+    return { ok: false, reason: "below_vwap" };
+  }
+
+  if (
+    Number.isFinite(rangeHigh) &&
+    Number.isFinite(rangeLow) &&
+    rangeHigh > rangeLow &&
+    price - rangeHigh > (rangeHigh - rangeLow) / 2
+  ) {
+    return { ok: false, reason: "chase" };
+  }
+
+  return { ok: true, reason: "ok" };
 }
 
 export function stopFromRange({ entryPrice, rangeLow, maxStopPct = MAX_STOP_PCT }) {
@@ -439,16 +499,30 @@ export function shouldReplaceLegs({ plannedEntry, filledEntry, r }) {
   return Math.abs(filledEntry - plannedEntry) / r > REPLACE_LEGS_THRESHOLD_R;
 }
 
-export function legsFromFill({ filledEntry, stopPrice, plannedEntry }) {
-  const originalR = plannedEntry - stopPrice;
-  const stopDistance = Math.min(originalR, filledEntry * MAX_STOP_PCT);
-  const nextStop = roundPrice(filledEntry - stopDistance);
-  const nextTarget = roundPrice(filledEntry + REWARD_R * (filledEntry - nextStop));
+export function legsFromFill({
+  filledEntry,
+  stopPrice,
+  plannedEntry,
+  rangeLow,
+  maxStopPct = MAX_STOP_PCT,
+}) {
+  let nextStop;
+
+  if (Number.isFinite(rangeLow) && rangeLow > 0 && rangeLow < filledEntry) {
+    nextStop = stopFromRange({ entryPrice: filledEntry, rangeLow, maxStopPct });
+  } else {
+    const originalR = plannedEntry - stopPrice;
+    const stopDistance = Math.min(originalR, filledEntry * maxStopPct);
+    nextStop = roundPrice(filledEntry - stopDistance);
+  }
+
+  const nextR = filledEntry - nextStop;
+  const nextTarget = roundPrice(filledEntry + REWARD_R * nextR);
 
   return {
     stopPrice: nextStop,
     targetPrice: nextTarget,
-    r: filledEntry - nextStop,
+    r: nextR,
   };
 }
 

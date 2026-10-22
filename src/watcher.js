@@ -52,28 +52,11 @@ export function createWatcher({ alpaca, openai, store, notify }) {
     }
 
     if (order.status === "filled" && idea.status !== "exited") {
+      await adjustFilledLegs(idea, order);
+
       if (idea.status !== "filled") {
         await markFilled(session, idea, order);
-      }
-
-      if (!idea.legsAdjusted && (order.legs ?? []).length > 0) {
-        if (
-          shouldReplaceLegs({
-            plannedEntry: idea.entryPrice,
-            filledEntry: idea.filledAvgPrice,
-            r: idea.r,
-          })
-        ) {
-          const next = legsFromFill({
-            filledEntry: idea.filledAvgPrice,
-            stopPrice: idea.stopPrice,
-            plannedEntry: idea.entryPrice,
-          });
-          await replaceLegs(order, next);
-          Object.assign(idea, next);
-        }
-
-        idea.legsAdjusted = true;
+      } else {
         await store.saveSession(session);
       }
     }
@@ -249,6 +232,42 @@ export function createWatcher({ alpaca, openai, store, notify }) {
     }
   }
 
+  async function adjustFilledLegs(idea, order) {
+    if (idea.legsAdjusted || (order.legs ?? []).length === 0) {
+      return;
+    }
+
+    idea.legsAdjusted = true;
+    const filledEntry = Number(order.filled_avg_price);
+
+    if (
+      !shouldReplaceLegs({
+        plannedEntry: idea.entryPrice,
+        filledEntry,
+        r: idea.r,
+      })
+    ) {
+      return;
+    }
+
+    const hasOpenLeg = (order.legs ?? []).some((leg) =>
+      isOpenOrderStatus(leg.status),
+    );
+
+    if (!hasOpenLeg) {
+      return;
+    }
+
+    const next = legsFromFill({
+      filledEntry,
+      stopPrice: idea.stopPrice,
+      plannedEntry: idea.entryPrice,
+      rangeLow: idea.rangeLow,
+    });
+    await replaceLegs(order, next);
+    Object.assign(idea, next);
+  }
+
   async function replaceLegs(order, next) {
     const stopLeg = (order.legs ?? []).find(
       (leg) => isStopLeg(leg) && isOpenOrderStatus(leg.status),
@@ -257,12 +276,20 @@ export function createWatcher({ alpaca, openai, store, notify }) {
       (leg) => !isStopLeg(leg) && isOpenOrderStatus(leg.status),
     );
 
-    if (targetLeg) {
-      await alpaca.replaceOrder(targetLeg.id, { limitPrice: next.targetPrice });
+    if (stopLeg) {
+      try {
+        await alpaca.replaceOrder(stopLeg.id, { stopPrice: next.stopPrice });
+      } catch (error) {
+        console.error(error);
+      }
     }
 
-    if (stopLeg) {
-      await alpaca.replaceOrder(stopLeg.id, { stopPrice: next.stopPrice });
+    if (targetLeg) {
+      try {
+        await alpaca.replaceOrder(targetLeg.id, { limitPrice: next.targetPrice });
+      } catch (error) {
+        console.error(error);
+      }
     }
   }
 

@@ -9,6 +9,7 @@ import {
   isoFromNy,
   planEntry,
   priorDailyBars,
+  resolveEntryReferencePrice,
   scanWindowLabel,
 } from "./market.js";
 
@@ -85,8 +86,14 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
         continue;
       }
 
-      const ask = Number(quotes?.[symbol]?.ap ?? quotes?.[symbol]?.quote?.ap);
-      const rawEntryPrice = Number.isFinite(ask) && ask > 0 ? ask : result.lastClose;
+      const rawQuote = quotes?.[symbol]?.quote ?? quotes?.[symbol];
+      const ask = Number(rawQuote?.ap);
+      const bid = Number(rawQuote?.bp);
+      const rawEntryPrice = resolveEntryReferencePrice({
+        ask,
+        bid,
+        lastClose: result.lastClose,
+      });
       const sized = planEntry({
         idea: result,
         rawEntryPrice,
@@ -246,13 +253,25 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
     session.pdtNoted = true;
     await store.saveSession(session);
     const conf = await alpaca.getAccountConfigurations().catch(() => ({}));
-    return `Счёт: PDT=${account.pattern_day_trader}, day trades=${account.daytrade_count}, pdt_check=${conf.pdt_check ?? "н/д"}.`;
+    return formatAccountNote(account, conf);
   }
 
   return {
     scanSession,
     finishScanWindow,
   };
+}
+
+export function formatAccountNote(account = {}, conf = {}) {
+  const pdtCheck = conf?.pdt_check ?? "н/д";
+
+  if (account?.pattern_day_trader != null || account?.daytrade_count != null) {
+    return `Счёт: PDT=${account.pattern_day_trader ?? "н/д"}, day trades=${account.daytrade_count ?? "н/д"}, pdt_check=${pdtCheck}.`;
+  }
+
+  const status = account?.status ?? "ACTIVE";
+  const multiplier = account?.multiplier ? `${account.multiplier}x` : "1x";
+  return `Счёт: статус=${status}, плечо=${multiplier}, pdt_check=${pdtCheck}.`;
 }
 
 export function groupNewsBySymbol(articles) {

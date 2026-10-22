@@ -138,6 +138,13 @@ export function createAlpacaClient({ alpacaApiKey, alpacaSecretKey }) {
       return request(DATA_URL, `/v2/stocks/quotes/latest?${params}`);
     },
 
+    getSnapshot(symbol) {
+      return request(
+        DATA_URL,
+        `/v2/stocks/${encodeURIComponent(symbol)}/snapshot?feed=iex`,
+      );
+    },
+
     getStockBars,
 
     getNews({ symbols, start, limit = 5 }) {
