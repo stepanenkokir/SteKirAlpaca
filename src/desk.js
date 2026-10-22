@@ -1,7 +1,13 @@
 import { isNotFound, isRateLimited } from "./alpaca.js";
 import { phaseLabel } from "./cards.js";
 import { formatMoney } from "./format.js";
-import { eventsSince, formatSummary, summarizeEvents } from "./journal.js";
+import {
+  countReasonValues,
+  eventsSince,
+  formatFilterCounts,
+  formatSummary,
+  summarizeEvents,
+} from "./journal.js";
 import {
   MAX_IDEAS_PER_DAY,
   formatNyClock,
@@ -68,9 +74,22 @@ export function createDesk({ alpaca, openai, store, config, notifier }) {
     await watcher.watchOrders({ session, now });
 
     if (phase === "scan" && session.lastScanMinute !== minute) {
+      if (!session.scanStarted) {
+        session.scanStarted = true;
+        console.log(
+          `[${date} ${formatNyClock(now)}] Старт сканирования ORB (${config.watchlist.length} тикеров, окно ${scanWindowLabel()})`,
+        );
+      }
+
       session.lastScanMinute = minute;
       await store.saveSession(session);
       await scanner.scanSession({ session, now, date });
+    }
+
+    if (phase === "watch" && session.scanStarted && !session.scanSummarySent) {
+      session.scanSummarySent = true;
+      await store.saveSession(session);
+      await scanner.finishScanWindow({ session, now, date });
     }
 
     if (session.lastWatchMinute !== minute) {
@@ -99,16 +118,26 @@ export function createDesk({ alpaca, openai, store, config, notifier }) {
 
       if (phase !== "scan") {
         const state = clock.is_open ? "открыта" : "закрыта";
+        const filterText = formatFilterCounts(countReasonValues(session.lastFilters));
         return [
           `Окно поиска пробоя: ${scanWindowLabel()}.`,
           `Сейчас ${formatNyClock(now)}, фаза ${phaseLabel(phase)}, сессия ${state}.`,
-        ].join("\n");
+          filterText ? `Последний отсев: ${filterText}.` : null,
+        ]
+          .filter(Boolean)
+          .join("\n");
       }
 
       const added = await scanner.scanSession({ session, now, date });
 
       if (added.length === 0) {
-        return `Новых пробоев нет. Смотрю ${config.watchlist.length} тикеров, окно ${scanWindowLabel()}.`;
+        const filterText = formatFilterCounts(countReasonValues(session.lastFilters));
+        return [
+          `Новых пробоев нет. Смотрю ${config.watchlist.length} тикеров, окно ${scanWindowLabel()}.`,
+          filterText ? `Отсев: ${filterText}.` : null,
+        ]
+          .filter(Boolean)
+          .join("\n");
       }
 
       return `Отправил карточки: ${added.join(", ")}.`;

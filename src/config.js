@@ -52,7 +52,8 @@ export function loadConfig() {
     watchlist: parseWatchlist(process.env.WATCHLIST),
     riskFraction: optionalNumber("RISK_FRACTION", 0.005),
     maxPositionFraction: optionalNumber("MAX_POSITION_FRACTION", 0.25),
-    rvolMin: optionalNumber("RVOL_MIN", 1.5),
+    rvolMin: optionalNumber("RVOL_MIN", 1.1),
+    maxRangePct: optionalNumber("MAX_RANGE_PCT", 0.025),
     entryBufferPct: optionalNumber("ENTRY_BUFFER_PCT", 0.001),
     autoFlatten: optionalBoolean("AUTO_FLATTEN", true),
   };

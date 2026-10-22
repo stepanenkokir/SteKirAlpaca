@@ -68,6 +68,17 @@ for (const chunk of chunks(sessions, 5)) {
 
 process.stdout.write("\n");
 
+const barsBySymbolAndDate = {};
+
+for (const symbol of config.watchlist) {
+  barsBySymbolAndDate[symbol] = {};
+
+  for (const bar of minuteBars[symbol] ?? []) {
+    const day = sessionDate(new Date(bar.t));
+    (barsBySymbolAndDate[symbol][day] ??= []).push(bar);
+  }
+}
+
 const events = [];
 let daySignals = 0;
 
@@ -76,9 +87,7 @@ for (const session of sessions) {
   let used = 0;
 
   for (const symbol of config.watchlist) {
-    const bars = (minuteBars[symbol] ?? []).filter(
-      (bar) => sessionDate(new Date(bar.t)) === session.date,
-    );
+    const bars = barsBySymbolAndDate[symbol][session.date] ?? [];
     const avgDaily = averageDailyVolume(
       priorDailyBars(dailyBars[symbol] ?? [], session.date),
     );
@@ -92,6 +101,7 @@ for (const session of sessions) {
         now,
         avgDailyVolumeValue: avgDaily,
         rvolMin: config.rvolMin,
+        maxRangePct: config.maxRangePct,
       });
 
       if (!result.ok) {

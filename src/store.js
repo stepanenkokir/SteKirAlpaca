@@ -108,6 +108,9 @@ export function emptySession(date) {
     lastWatchMinute: null,
     lastErrorAt: null,
     flattened: false,
+    scanStarted: false,
+    scanSummarySent: false,
+    lastFilters: {},
     ideas: {},
   };
 }

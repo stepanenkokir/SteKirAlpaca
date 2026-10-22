@@ -29,11 +29,29 @@ export function summarizeEvents(events) {
   };
 }
 
-export function formatSummary(summary) {
-  const filters = Object.entries(summary.filters ?? {})
+export function formatFilterCounts(filters) {
+  return Object.entries(filters ?? {})
     .sort((a, b) => b[1] - a[1])
     .map(([reason, count]) => `${reason}: ${count}`)
     .join(", ");
+}
+
+export function countReasonValues(reasons) {
+  const counts = {};
+
+  for (const reason of Object.values(reasons ?? {})) {
+    if (!reason) {
+      continue;
+    }
+
+    counts[reason] = (counts[reason] ?? 0) + 1;
+  }
+
+  return counts;
+}
+
+export function formatSummary(summary) {
+  const filters = formatFilterCounts(summary.filters);
 
   return [
     `Сигналов: ${summary.signals}`,

@@ -224,4 +224,102 @@ describe("scanner and desk session integrity", () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it("logs filter reasons to journal and sends summary at 11:00 ET when no signals found", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "stock-analiz-"));
+    try {
+      const store = createStore({ dataDir: dir });
+      const day = "2026-06-15";
+      const notifications = [];
+
+      const minuteBars = [];
+      for (let m = 30; m < 45; m += 1) {
+        minuteBars.push({
+          t: nyWallToUtc(`${day}T09:${m}:00`),
+          o: 100.5,
+          h: 101,
+          l: 100,
+          c: 100.5,
+          v: 100,
+        });
+      }
+      minuteBars.push({
+        t: nyWallToUtc(`${day}T09:45:00`),
+        o: 100.6,
+        h: 100.8,
+        l: 100.4,
+        c: 100.7,
+        v: 100,
+      });
+
+      const alpaca = {
+        async getClock() {
+          return { is_open: true, next_close: nyWallToUtc(`${day}T16:00:00`) };
+        },
+        async getStockBars({ timeframe }) {
+          if (timeframe === "1Day") {
+            return {
+              AAPL: [{ t: nyWallToUtc("2026-06-12T09:30:00"), v: 100_000 }],
+            };
+          }
+          return { AAPL: minuteBars };
+        },
+        async getAccount() {
+          return {
+            equity: "100000",
+            buying_power: "100000",
+            pattern_day_trader: false,
+            daytrade_count: 0,
+          };
+        },
+        async getLatestQuotes() {
+          return { quotes: { AAPL: { ap: 100.7 } } };
+        },
+      };
+
+      const openai = {
+        async explainSignal() {
+          return { thesis: "", risk: "", prompt: {}, raw: {} };
+        },
+        async explainExit() {
+          return { thesis: "", action: "", prompt: {}, raw: {} };
+        },
+      };
+
+      const desk = createDesk({
+        alpaca,
+        openai,
+        store,
+        config: {
+          watchlist: ["AAPL"],
+          rvolMin: 1.1,
+          maxRangePct: 0.025,
+          entryBufferPct: 0.001,
+          riskFraction: 0.005,
+          maxPositionFraction: 0.25,
+          autoFlatten: true,
+        },
+        notifier: {
+          async send(text) {
+            notifications.push(text);
+          },
+        },
+      });
+
+      await desk.tick(new Date(nyWallToUtc(`${day}T09:46:05`)));
+      await desk.tick(new Date(nyWallToUtc(`${day}T11:00:05`)));
+
+      assert.equal(notifications.length, 1);
+      assert.match(notifications[0], /новых сигналов нет/);
+      assert.match(notifications[0], /no_breakout: 1/);
+
+      const journal = await store.readJournal();
+      assert.equal(journal.length, 1);
+      assert.equal(journal[0].type, "filter");
+      assert.equal(journal[0].symbol, "AAPL");
+      assert.equal(journal[0].reason, "no_breakout");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });

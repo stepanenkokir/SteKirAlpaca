@@ -4,7 +4,7 @@ Telegram-бот для paper-торговли через [Alpaca](https://alpaca
 
 Бот ходит в Trading API сам. [Alpaca MCP](https://github.com/alpacahq/alpaca-mcp-server) нужен агенту в Cursor и в работу бота не входит.
 
-Текущая версия: **0.3.0**. Проверка в Telegram: `/version`.
+Текущая версия: **0.3.1**. Проверка в Telegram: `/version`.
 
 ## Возможности
 
@@ -39,9 +39,11 @@ Telegram-бот для paper-торговли через [Alpaca](https://alpaca
 
 - закрытие минутной свечи выше high диапазона 09:30–09:45
 - цена выше VWAP сессии
-- относительный объём открытия ≥ `RVOL_MIN` (по умолчанию 1.5)
-- ширина диапазона 0.15–2%, уход от high не больше половины ширины
+- относительный объём открытия ≥ `RVOL_MIN` (по умолчанию 1.1)
+- ширина диапазона 0.15–`MAX_RANGE_PCT` (по умолчанию 2.5%), уход от high не больше половины ширины
 - не больше трёх идей в день и одна на тикер
+
+По завершении окна сканирования (`11:00 ET`) бот записывает причины отсева в `data/journal.jsonl`, а если за сессию не было ни одного сигнала — отправляет в Telegram сводку по фильтрам.
 
 Размер: риск `RISK_FRACTION` от equity (0.5%), нотионал не больше `MAX_POSITION_FRACTION` (25%) и не больше `buying_power`. Стоп — под low диапазона, но не дальше 1.2% от входа. Цель — 2R.
 
@@ -133,7 +135,7 @@ OPENAI_API_KEY=...
 
 `TELEGRAM_ALLOWED_USER_ID` — целое положительное число, не username.
 
-Необязательные переменные: `OPENAI_MODEL`, `WATCHLIST`, `RISK_FRACTION`, `MAX_POSITION_FRACTION`, `RVOL_MIN`, `ENTRY_BUFFER_PCT`, `AUTO_FLATTEN`.
+Необязательные переменные: `OPENAI_MODEL`, `WATCHLIST`, `RISK_FRACTION`, `MAX_POSITION_FRACTION`, `RVOL_MIN`, `MAX_RANGE_PCT`, `ENTRY_BUFFER_PCT`, `AUTO_FLATTEN`.
 
 ### Alpaca MCP в Cursor
 
@@ -159,7 +161,7 @@ OPENAI_API_KEY=...
 npm start
 ```
 
-В консоли должно появиться `Bot started v0.3.0`. Номер совпадает с `package.json` и с `/version`.
+В консоли должно появиться `Bot started v0.3.1`. Номер совпадает с `package.json` и с `/version`.
 
 Остановка: `Ctrl+C`. После смены кода бота нужен повторный `npm start`.
 
@@ -189,6 +191,7 @@ npm start
 - **0.1.0** — каркас: счёт, позиции, котировка, рыночные ордера с подтверждением
 - **0.2.0** — журнал версий, `/version`, этот README
 - **0.3.0** — дневной стол ORB, OpenAI, журнал и бэктест
+- **0.3.1** — отчёт об окне сканирования в 11:00 ET, запись фильтров в журнал, калибровка RVOL/ширины диапазона под IEX
 
 Невыпущенные идеи держать в секции `Unreleased` журнала, в `package.json` их не писать, пока код не влит.
 

@@ -1,12 +1,15 @@
 import { buyKeyboard, signalCardText } from "./cards.js";
+import { countReasonValues, formatFilterCounts } from "./journal.js";
 import {
   MAX_IDEAS_PER_DAY,
   averageDailyVolume,
   evaluateBreakout,
+  formatNyClock,
   ideaSlotsUsed,
   isoFromNy,
   planEntry,
   priorDailyBars,
+  scanWindowLabel,
 } from "./market.js";
 
 const SUMMARY_MAX_CHARS = 200;
@@ -61,9 +64,11 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
 
     const quotes = quotesPayload.quotes ?? quotesPayload;
     const candidates = [];
+    session.lastFilters ??= {};
 
     for (const symbol of config.watchlist) {
       if (session.ideas[symbol]) {
+        delete session.lastFilters[symbol];
         continue;
       }
 
@@ -72,9 +77,11 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
         now,
         avgDailyVolumeValue: avgDailyBySymbol[symbol] ?? null,
         rvolMin: config.rvolMin,
+        maxRangePct: config.maxRangePct,
       });
 
       if (!result.ok) {
+        session.lastFilters[symbol] = result.reason;
         continue;
       }
 
@@ -91,6 +98,7 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
       });
 
       if (!sized) {
+        session.lastFilters[symbol] = "no_size";
         continue;
       }
 
@@ -105,7 +113,12 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
     const slots = MAX_IDEAS_PER_DAY - ideaSlotsUsed(session.ideas);
     const picked = candidates.slice(0, slots);
 
+    for (const overflow of candidates.slice(slots)) {
+      session.lastFilters[overflow.symbol] = "max_ideas";
+    }
+
     if (picked.length === 0) {
+      await store.saveSession(session);
       return [];
     }
 
@@ -137,15 +150,16 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
         news: symbolNews.news,
       };
       session.ideas[candidate.symbol] = idea;
+      delete session.lastFilters[candidate.symbol];
       await store.saveSession(session);
-      await sendSignalCard(session, idea, date, pdtNote);
+      await sendSignalCard(session, idea, date, pdtNote, now);
       added.push(candidate.symbol);
     }
 
     return added;
   }
 
-  async function sendSignalCard(session, idea, date, pdtNote) {
+  async function sendSignalCard(session, idea, date, pdtNote, now = new Date()) {
     const explanation = await openai.explainSignal({
       idea,
       headlines: idea.headlines,
@@ -171,6 +185,9 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
       targetPrice: idea.targetPrice,
       openai: idea.explanation,
     });
+    console.log(
+      `[${date} ${formatNyClock(now)}] Сигнал ORB: ${idea.symbol} цена=${idea.lastClose} RVOL=${idea.rvol.toFixed(2)}`,
+    );
     await notify(
       signalCardText(idea, { pdtNote, explanation: idea.explanation }),
       buyKeyboard(date, idea.symbol),
@@ -187,6 +204,40 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
     }
   }
 
+  async function finishScanWindow({ session, now, date }) {
+    const filters = session.lastFilters ?? {};
+
+    for (const [symbol, reason] of Object.entries(filters)) {
+      if (!session.ideas[symbol] && reason) {
+        await store.appendJournal({
+          type: "filter",
+          symbol,
+          date,
+          reason,
+        });
+      }
+    }
+
+    const ideasCount = ideaSlotsUsed(session.ideas);
+    const filterText = formatFilterCounts(countReasonValues(filters));
+
+    console.log(
+      `[${date} ${formatNyClock(now)}] Окно ORB завершено: идей ${ideasCount}/${MAX_IDEAS_PER_DAY}. Фильтры: ${filterText || "нет"}`,
+    );
+
+    if (ideasCount === 0) {
+      const lines = [
+        `Окно пробоя ${scanWindowLabel()} завершено: новых сигналов нет (проверено ${config.watchlist.length} тикеров).`,
+      ];
+
+      if (filterText) {
+        lines.push(`Отсев: ${filterText}.`);
+      }
+
+      await notify(lines.join("\n"));
+    }
+  }
+
   async function takePdtNote(session, account) {
     if (session.pdtNoted) {
       return null;
@@ -200,6 +251,7 @@ export function createScanner({ alpaca, openai, store, config, notify }) {
 
   return {
     scanSession,
+    finishScanWindow,
   };
 }
 

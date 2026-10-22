@@ -5,7 +5,7 @@ export const SCAN_START_MINUTES = 9 * 60 + 46;
 export const SCAN_END_MINUTES = 11 * 60;
 export const OPENING_VOLUME_FRACTION = 0.12;
 export const MIN_RANGE_PCT = 0.0015;
-export const MAX_RANGE_PCT = 0.02;
+export const MAX_RANGE_PCT = 0.025;
 export const MAX_STOP_PCT = 0.012;
 export const REWARD_R = 2;
 export const MAX_IDEAS_PER_DAY = 3;
@@ -36,22 +36,43 @@ const NY_FORMATTER = new Intl.DateTimeFormat("en-US", {
   hourCycle: "h23",
 });
 
-export function nyParts(date) {
-  const map = {};
+const NY_MINUTE_CACHE = new Map();
+const NY_MINUTE_CACHE_MAX = 4096;
 
-  for (const part of NY_FORMATTER.formatToParts(date)) {
-    if (part.type !== "literal") {
-      map[part.type] = part.value;
+export function nyParts(date) {
+  const ms = date.getTime();
+  const minuteKey = Math.floor(ms / 60_000);
+  let cached = NY_MINUTE_CACHE.get(minuteKey);
+
+  if (!cached) {
+    const map = {};
+
+    for (const part of NY_FORMATTER.formatToParts(date)) {
+      if (part.type !== "literal") {
+        map[part.type] = part.value;
+      }
     }
+
+    cached = {
+      year: Number(map.year),
+      month: Number(map.month),
+      day: Number(map.day),
+      hour: Number(map.hour),
+      minute: Number(map.minute),
+    };
+
+    if (NY_MINUTE_CACHE.size >= NY_MINUTE_CACHE_MAX) {
+      NY_MINUTE_CACHE.clear();
+    }
+
+    NY_MINUTE_CACHE.set(minuteKey, cached);
   }
 
+  const secondOffset = ((ms % 60_000) + 60_000) % 60_000;
+
   return {
-    year: Number(map.year),
-    month: Number(map.month),
-    day: Number(map.day),
-    hour: Number(map.hour),
-    minute: Number(map.minute),
-    second: Number(map.second),
+    ...cached,
+    second: Math.floor(secondOffset / 1000),
   };
 }
 
@@ -274,6 +295,7 @@ export function evaluateBreakout({
   now,
   avgDailyVolumeValue,
   rvolMin,
+  maxRangePct = MAX_RANGE_PCT,
 }) {
   const ready = completedBars(bars, now);
   const range = openingRange(ready);
@@ -306,7 +328,7 @@ export function evaluateBreakout({
     return reject("too_narrow", { range, vwap, last });
   }
 
-  if (rangePct > MAX_RANGE_PCT) {
+  if (rangePct > maxRangePct) {
     return reject("too_wide", { range, vwap, last });
   }
 
